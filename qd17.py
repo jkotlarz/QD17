@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Quantum Harvesting Analysis — modularny refactor
+Quantum Decisions 17
 Autor: Jan Kotlarz
 Data: 2025-11-10
 
