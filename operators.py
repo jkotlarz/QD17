@@ -4,6 +4,7 @@
 import numpy as np
 import pandas as pd
 from scipy.optimize import minimize
+from scipy.linalg import expm
 
 
 # =========================
@@ -560,3 +561,111 @@ def relative_matrix_difference(A, B):
     if sum_A == 0:
         raise ValueError("Sum of absolute values of A is zero.")
     return sum_diff / sum_A
+
+
+# =========================
+# Hamiltonian identification from operator dynamics
+# =========================
+
+
+def _hermitian_basis(n):
+    """Prosta baza hermitowska w C^{n×n}: n diag + n(n-1) off-diag."""
+    basis = []
+    # diagonalne
+    for i in range(n):
+        M = np.zeros((n, n), dtype=complex)
+        M[i, i] = 1.0
+        basis.append(M)
+    # część symetryczna Re
+    for i in range(n):
+        for j in range(i+1, n):
+            M = np.zeros((n, n), dtype=complex)
+            M[i, j] = 1.0
+            M[j, i] = 1.0
+            basis.append(M)
+    # część antysymetryczna Im
+    for i in range(n):
+        for j in range(i+1, n):
+            M = np.zeros((n, n), dtype=complex)
+            M[i, j] = 1.0j
+            M[j, i] = -1.0j
+            basis.append(M)
+    return basis  # długość = n^2
+
+
+def _build_H_from_params(theta, basis):
+    H = np.zeros_like(basis[0], dtype=complex)
+    for c, B in zip(theta, basis):
+        H += c * B
+    return H
+
+
+def fit_hamiltonian_from_operators(operators_t, times, hermitian=True):
+    """
+    Estymuj czas-niezależny Hamiltonian z ewolucji operatorów w obrazie Heisenberga.
+
+    Parametry
+    ---------
+    operators_t : list
+        Lista elementów postaci:
+           {"O0": O0, "Ot": [O_t1, O_t2, ...]}
+        gdzie O0, O_tk są macierzami (np. numpy.array) tej samej wielkości.
+    times : array-like
+        Czasy [t1, t2, ...] odpowiadające kolejnym macierzom w każdym "Ot".
+    hermitian : bool
+        Jeśli True, wymusza hermitowską parametryzację H.
+
+    Zwraca
+    -------
+    H_opt : ndarray (complex)
+        Estymowany Hamiltonian.
+    result : OptimizeResult
+        Wynik scipy.optimize.minimize (dla diagnostyki).
+    """
+    times = np.asarray(times, dtype=float)
+    if len(times) == 0:
+        raise ValueError("Lista czasów nie może być pusta.")
+
+    # sprawdzenie wymiarów
+    O0 = operators_t[0]["O0"]
+    O0 = np.asarray(O0, dtype=complex)
+    n = O0.shape[0]
+    if O0.shape[0] != O0.shape[1]:
+        raise ValueError("Operatory muszą być kwadratowe.")
+
+    for entry in operators_t:
+        O0_i = np.asarray(entry["O0"], dtype=complex)
+        if O0_i.shape != O0.shape:
+            raise ValueError("Wszystkie operatory muszą mieć ten sam wymiar.")
+        Ot_list = [np.asarray(M, dtype=complex) for M in entry["Ot"]]
+        if len(Ot_list) != len(times):
+            raise ValueError("Długość Ot musi odpowiadać liczbie czasów.")
+        entry["O0"] = O0_i
+        entry["Ot"] = Ot_list
+
+    # baza dla H
+    if hermitian:
+        basis = _hermitian_basis(n)
+    else:
+        # pełna baza zespolona, jeśli kiedyś będzie potrzebna
+        basis = _hermitian_basis(n)  # na razie ta sama
+
+    theta0 = np.zeros(len(basis), dtype=float)
+
+    def objective(theta):
+        H = _build_H_from_params(theta, basis)
+        loss = 0.0
+        for t_idx, t in enumerate(times):
+            U = expm(-1j * H * t)
+            Udag = U.conj().T
+            for entry in operators_t:
+                O0_i = entry["O0"]
+                O_target = entry["Ot"][t_idx]
+                O_model = Udag @ O0_i @ U
+                diff = O_model - O_target
+                loss += np.linalg.norm(diff, "fro")**2
+        return loss.real
+
+    res = minimize(objective, theta0, method="BFGS")
+    H_opt = _build_H_from_params(res.x, basis)
+    return H_opt, res
